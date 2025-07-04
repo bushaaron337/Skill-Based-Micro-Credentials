@@ -277,3 +277,112 @@
 (define-read-only (get-credential-owner (credential-id uint))
   (nft-get-owner? skill-credential credential-id)
 )
+
+(define-map credential-endorsements
+  { credential-id: uint, endorser: principal }
+  {
+    trust-score: uint,
+    timestamp: uint,
+    feedback: (string-ascii 100)
+  }
+)
+
+(define-map endorsement-stats
+  uint
+  {
+    total-endorsements: uint,
+    average-trust-score: uint,
+    last-endorsed: uint
+  }
+)
+
+(define-map endorser-reputation
+  principal
+  {
+    endorsements-given: uint,
+    credibility-score: uint
+  }
+)
+
+(define-constant ERR-ALREADY-ENDORSED (err u109))
+(define-constant ERR-INVALID-TRUST-SCORE (err u110))
+(define-constant ERR-SELF-ENDORSEMENT (err u111))
+(define-constant ERR-ENDORSEMENT-NOT-FOUND (err u112))
+
+(define-public (endorse-credential (credential-id uint) (trust-score uint) (feedback (string-ascii 100)))
+  (let
+    (
+      (credential (unwrap! (map-get? credentials credential-id) ERR-CREDENTIAL-NOT-FOUND))
+      (credential-owner (get recipient credential))
+      (endorsement-key { credential-id: credential-id, endorser: tx-sender })
+    )
+    (asserts! (not (is-eq tx-sender credential-owner)) ERR-SELF-ENDORSEMENT)
+    (asserts! (and (>= trust-score u1) (<= trust-score u10)) ERR-INVALID-TRUST-SCORE)
+    (asserts! (is-none (map-get? credential-endorsements endorsement-key)) ERR-ALREADY-ENDORSED)
+    
+    (map-set credential-endorsements endorsement-key {
+      trust-score: trust-score,
+      timestamp: stacks-block-height,
+      feedback: feedback
+    })
+    
+    (update-endorsement-stats credential-id trust-score)
+    (update-endorser-reputation tx-sender)
+    (ok true)
+  )
+)
+
+(define-public (revoke-endorsement (credential-id uint))
+  (let
+    (
+      (endorsement-key { credential-id: credential-id, endorser: tx-sender })
+    )
+    (asserts! (is-some (map-get? credential-endorsements endorsement-key)) ERR-ENDORSEMENT-NOT-FOUND)
+    (map-delete credential-endorsements endorsement-key)
+    (ok true)
+  )
+)
+
+(define-private (update-endorsement-stats (credential-id uint) (new-trust-score uint))
+  (let
+    (
+      (current-stats (default-to { total-endorsements: u0, average-trust-score: u0, last-endorsed: u0 }
+                                 (map-get? endorsement-stats credential-id)))
+      (total-endorsements (+ (get total-endorsements current-stats) u1))
+      (current-average (get average-trust-score current-stats))
+      (new-average (/ (+ (* current-average (get total-endorsements current-stats)) new-trust-score) total-endorsements))
+    )
+    (map-set endorsement-stats credential-id {
+      total-endorsements: total-endorsements,
+      average-trust-score: new-average,
+      last-endorsed: stacks-block-height
+    })
+  )
+)
+
+(define-private (update-endorser-reputation (endorser principal))
+  (let
+    (
+      (current-rep (default-to { endorsements-given: u0, credibility-score: u50 }
+                               (map-get? endorser-reputation endorser)))
+    )
+    (map-set endorser-reputation endorser {
+      endorsements-given: (+ (get endorsements-given current-rep) u1),
+      credibility-score: (if (>= (+ (get credibility-score current-rep) u1) u100)
+                            u100
+                            (+ (get credibility-score current-rep) u1))
+    })
+  )
+)
+
+(define-read-only (get-credential-endorsements (credential-id uint))
+  (map-get? endorsement-stats credential-id)
+)
+
+(define-read-only (get-endorsement-details (credential-id uint) (endorser principal))
+  (map-get? credential-endorsements { credential-id: credential-id, endorser: endorser })
+)
+
+(define-read-only (get-endorser-reputation (endorser principal))
+  (map-get? endorser-reputation endorser)
+)
