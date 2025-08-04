@@ -1,3 +1,22 @@
+(define-constant ERR-NOT-AUTHORIZED (err u100))
+(define-constant ERR-CREDENTIAL-NOT-FOUND (err u101))
+(define-constant ERR-INVALID-DIFFICULTY (err u102))
+(define-constant ERR-SKILL-NOT-FOUND (err u103))
+(define-constant ERR-PREREQUISITES-NOT-MET (err u104))
+(define-constant ERR-ALREADY-AUTHORIZED (err u105))
+(define-constant ERR-NOT-OWNER (err u106))
+(define-constant ERR-INVALID-RECIPIENT (err u107))
+(define-constant ERR-CREDENTIAL-EXISTS (err u108))
+
+(define-constant ERR-ALREADY-ENDORSED (err u109))
+(define-constant ERR-INVALID-TRUST-SCORE (err u110))
+(define-constant ERR-SELF-ENDORSEMENT (err u111))
+(define-constant ERR-ENDORSEMENT-NOT-FOUND (err u112))
+
+(define-constant ERR-CREDENTIAL-EXPIRED (err u113))
+(define-constant ERR-NOT-RENEWABLE (err u114))
+(define-constant ERR-RENEWAL-TOO-EARLY (err u115))
+
 (define-non-fungible-token skill-credential uint)
 
 (define-data-var next-credential-id uint u1)
@@ -49,15 +68,6 @@
   }
 )
 
-(define-constant ERR-NOT-AUTHORIZED (err u100))
-(define-constant ERR-CREDENTIAL-NOT-FOUND (err u101))
-(define-constant ERR-INVALID-DIFFICULTY (err u102))
-(define-constant ERR-SKILL-NOT-FOUND (err u103))
-(define-constant ERR-PREREQUISITES-NOT-MET (err u104))
-(define-constant ERR-ALREADY-AUTHORIZED (err u105))
-(define-constant ERR-NOT-OWNER (err u106))
-(define-constant ERR-INVALID-RECIPIENT (err u107))
-(define-constant ERR-CREDENTIAL-EXISTS (err u108))
 
 (define-public (authorize-issuer (issuer principal))
   (begin
@@ -304,10 +314,6 @@
   }
 )
 
-(define-constant ERR-ALREADY-ENDORSED (err u109))
-(define-constant ERR-INVALID-TRUST-SCORE (err u110))
-(define-constant ERR-SELF-ENDORSEMENT (err u111))
-(define-constant ERR-ENDORSEMENT-NOT-FOUND (err u112))
 
 (define-public (endorse-credential (credential-id uint) (trust-score uint) (feedback (string-ascii 100)))
   (let
@@ -385,4 +391,93 @@
 
 (define-read-only (get-endorser-reputation (endorser principal))
   (map-get? endorser-reputation endorser)
+)
+
+(define-map skill-expiration-periods
+  (string-ascii 50)
+  {
+    duration-blocks: uint,
+    renewable: bool,
+    grace-period: uint
+  }
+)
+
+(define-map credential-expiration
+  uint
+  {
+    expires-at: uint,
+    renewed-count: uint,
+    last-renewal: uint
+  }
+)
+
+
+(define-public (set-skill-expiration (skill-name (string-ascii 50)) (duration uint) (renewable bool) (grace uint))
+  (begin
+    (asserts! (is-eq tx-sender (var-get contract-owner)) ERR-NOT-OWNER)
+    (map-set skill-expiration-periods skill-name {
+      duration-blocks: duration,
+      renewable: renewable,
+      grace-period: grace
+    })
+    (ok true)
+  )
+)
+
+(define-public (renew-credential (credential-id uint))
+  (let
+    (
+      (credential (unwrap! (map-get? credentials credential-id) ERR-CREDENTIAL-NOT-FOUND))
+      (owner (unwrap! (nft-get-owner? skill-credential credential-id) ERR-CREDENTIAL-NOT-FOUND))
+      (skill-name (get skill-name credential))
+      (expiration-info (map-get? skill-expiration-periods skill-name))
+      (current-expiration (map-get? credential-expiration credential-id))
+    )
+    (asserts! (is-eq tx-sender owner) ERR-NOT-AUTHORIZED)
+    (match expiration-info
+      exp-info
+        (begin
+          (asserts! (get renewable exp-info) ERR-NOT-RENEWABLE)
+          (asserts! (is-credential-expired credential-id) ERR-RENEWAL-TOO-EARLY)
+          (map-set credential-expiration credential-id {
+            expires-at: (+ stacks-block-height (get duration-blocks exp-info)),
+            renewed-count: (+ (default-to u0 (get renewed-count current-expiration)) u1),
+            last-renewal: stacks-block-height
+          })
+          (ok true)
+        )
+      ERR-SKILL-NOT-FOUND
+    )
+  )
+)
+
+(define-private (set-credential-expiration (credential-id uint) (skill-name (string-ascii 50)))
+  (match (map-get? skill-expiration-periods skill-name)
+    exp-info
+      (map-set credential-expiration credential-id {
+        expires-at: (+ stacks-block-height (get duration-blocks exp-info)),
+        renewed-count: u0,
+        last-renewal: stacks-block-height
+      })
+    false
+  )
+)
+
+(define-read-only (is-credential-valid (credential-id uint))
+  (match (map-get? credential-expiration credential-id)
+    exp-data (> (get expires-at exp-data) stacks-block-height)
+    true
+  )
+)
+
+(define-read-only (is-credential-expired (credential-id uint))
+  (not (is-credential-valid credential-id))
+)
+
+(define-read-only (get-credential-expiration (credential-id uint))
+  (map-get? credential-expiration credential-id)
+)
+
+(define-read-only (get-skill-expiration-settings (skill-name (string-ascii 50)))
+  (map-get? skill-expiration-periods skill-name)
 )
