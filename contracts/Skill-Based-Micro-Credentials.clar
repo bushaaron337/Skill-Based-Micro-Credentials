@@ -17,6 +17,13 @@
 (define-constant ERR-NOT-RENEWABLE (err u114))
 (define-constant ERR-RENEWAL-TOO-EARLY (err u115))
 
+(define-constant ERR-BADGE-EXISTS (err u116))
+(define-constant ERR-BADGE-NOT-FOUND (err u117))
+(define-constant ERR-CRITERIA-NOT-MET (err u118))
+
+(define-non-fungible-token achievement-badge uint)
+(define-data-var next-badge-id uint u1)
+
 (define-non-fungible-token skill-credential uint)
 
 (define-data-var next-credential-id uint u1)
@@ -480,4 +487,82 @@
 
 (define-read-only (get-skill-expiration-settings (skill-name (string-ascii 50)))
   (map-get? skill-expiration-periods skill-name)
+)
+
+(define-map badge-definitions
+  uint
+  {
+    badge-name: (string-ascii 30),
+    description: (string-ascii 100),
+    criteria-type: (string-ascii 20),
+    criteria-value: uint,
+    rarity-level: uint
+  }
+)
+
+(define-map user-badges
+  principal
+  (list 50 uint)
+)
+
+(define-map badge-holders
+  uint
+  (list 100 principal)
+)
+
+(define-public (create-badge-type (name (string-ascii 30)) (description (string-ascii 100)) (criteria-type (string-ascii 20)) (criteria-value uint) (rarity uint))
+  (let
+    ((badge-id (var-get next-badge-id)))
+    (asserts! (is-eq tx-sender (var-get contract-owner)) ERR-NOT-OWNER)
+    (map-set badge-definitions badge-id {
+      badge-name: name,
+      description: description,
+      criteria-type: criteria-type,
+      criteria-value: criteria-value,
+      rarity-level: rarity
+    })
+    (var-set next-badge-id (+ badge-id u1))
+    (ok badge-id)
+  )
+)
+
+(define-public (award-badge (user principal) (badge-id uint))
+  (let
+    (
+      (badge-def (unwrap! (map-get? badge-definitions badge-id) ERR-BADGE-NOT-FOUND))
+      (user-badge-list (default-to (list) (map-get? user-badges user)))
+      (badge-holder-list (default-to (list) (map-get? badge-holders badge-id)))
+    )
+    (asserts! (check-badge-criteria user badge-def) ERR-CRITERIA-NOT-MET)
+    (asserts! (not (is-some (index-of user-badge-list badge-id))) ERR-BADGE-EXISTS)
+    
+    (try! (nft-mint? achievement-badge badge-id user))
+    (map-set user-badges user 
+      (unwrap! (as-max-len? (append user-badge-list badge-id) u50) ERR-BADGE-EXISTS))
+    (map-set badge-holders badge-id
+      (unwrap! (as-max-len? (append badge-holder-list user) u100) ERR-BADGE-EXISTS))
+    (ok true)
+  )
+)
+
+(define-private (check-badge-criteria (user principal) (badge-def {badge-name: (string-ascii 30), description: (string-ascii 100), criteria-type: (string-ascii 20), criteria-value: uint, rarity-level: uint}))
+  (let
+    ((user-creds (default-to (list) (map-get? user-credentials user))))
+    (if (is-eq (get criteria-type badge-def) "credential-count")
+      (>= (len user-creds) (get criteria-value badge-def))
+      true
+    )
+  )
+)
+
+(define-read-only (get-user-badges (user principal))
+  (map-get? user-badges user)
+)
+
+(define-read-only (get-badge-definition (badge-id uint))
+  (map-get? badge-definitions badge-id)
+)
+
+(define-read-only (get-badge-holders (badge-id uint))
+  (map-get? badge-holders badge-id)
 )
