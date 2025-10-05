@@ -21,6 +21,12 @@
 (define-constant ERR-BADGE-NOT-FOUND (err u117))
 (define-constant ERR-CRITERIA-NOT-MET (err u118))
 
+(define-constant ERR-CHALLENGE-EXISTS (err u119))
+(define-constant ERR-CHALLENGE-NOT-FOUND (err u120))
+(define-constant ERR-ALREADY-VOTED (err u121))
+(define-constant ERR-NOT-VALIDATOR (err u122))
+(define-constant ERR-CHALLENGE-CLOSED (err u123))
+
 (define-non-fungible-token achievement-badge uint)
 (define-data-var next-badge-id uint u1)
 
@@ -565,4 +571,82 @@
 
 (define-read-only (get-badge-holders (badge-id uint))
   (map-get? badge-holders badge-id)
+)
+
+(define-map credential-challenges
+  uint
+  {
+    challenger: principal,
+    credential-id: uint,
+    reason: (string-ascii 100),
+    votes-for: uint,
+    votes-against: uint,
+    status: (string-ascii 10),
+    created-at: uint
+  }
+)
+
+(define-map challenge-votes
+  { challenge-id: uint, validator: principal }
+  bool
+)
+
+(define-map authorized-validators principal bool)
+
+(define-data-var next-challenge-id uint u1)
+
+(define-public (authorize-validator (validator principal))
+  (begin
+    (asserts! (is-eq tx-sender (var-get contract-owner)) ERR-NOT-OWNER)
+    (map-set authorized-validators validator true)
+    (ok true)
+  )
+)
+
+(define-public (challenge-credential (credential-id uint) (reason (string-ascii 100)))
+  (let
+    ((challenge-id (var-get next-challenge-id)))
+    (asserts! (is-some (map-get? credentials credential-id)) ERR-CREDENTIAL-NOT-FOUND)
+    (map-set credential-challenges challenge-id {
+      challenger: tx-sender,
+      credential-id: credential-id,
+      reason: reason,
+      votes-for: u0,
+      votes-against: u0,
+      status: "active",
+      created-at: stacks-block-height
+    })
+    (var-set next-challenge-id (+ challenge-id u1))
+    (ok challenge-id)
+  )
+)
+
+(define-public (vote-on-challenge (challenge-id uint) (support bool))
+  (let
+    ((challenge (unwrap! (map-get? credential-challenges challenge-id) ERR-CHALLENGE-NOT-FOUND))
+     (vote-key { challenge-id: challenge-id, validator: tx-sender }))
+    (asserts! (default-to false (map-get? authorized-validators tx-sender)) ERR-NOT-VALIDATOR)
+    (asserts! (is-eq (get status challenge) "active") ERR-CHALLENGE-CLOSED)
+    (asserts! (is-none (map-get? challenge-votes vote-key)) ERR-ALREADY-VOTED)
+    (map-set challenge-votes vote-key support)
+    (map-set credential-challenges challenge-id
+      (merge challenge {
+        votes-for: (if support (+ (get votes-for challenge) u1) (get votes-for challenge)),
+        votes-against: (if support (get votes-against challenge) (+ (get votes-against challenge) u1))
+      })
+    )
+    (ok true)
+  )
+)
+
+(define-read-only (get-challenge (challenge-id uint))
+  (map-get? credential-challenges challenge-id)
+)
+
+(define-read-only (get-validator-vote (challenge-id uint) (validator principal))
+  (map-get? challenge-votes { challenge-id: challenge-id, validator: validator })
+)
+
+(define-read-only (is-validator (validator principal))
+  (default-to false (map-get? authorized-validators validator))
 )
