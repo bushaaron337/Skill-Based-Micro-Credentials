@@ -650,3 +650,95 @@
 (define-read-only (is-validator (validator principal))
   (default-to false (map-get? authorized-validators validator))
 )
+
+
+(define-map user-skill-points
+  principal
+  {
+    total-points: uint,
+    credentials-count: uint,
+    endorsements-received: uint,
+    badges-count: uint,
+    last-updated: uint
+  }
+)
+
+(define-map global-leaderboard
+  uint
+  {
+    user: principal,
+    rank-score: uint
+  }
+)
+
+(define-data-var leaderboard-size uint u0)
+(define-data-var next-rank-position uint u1)
+
+(define-public (update-user-ranking (user principal))
+  (let
+    (
+      (user-creds (default-to (list) (map-get? user-credentials user)))
+      (user-badge-list (default-to (list) (map-get? user-badges user)))
+      (skill-points (calculate-skill-points user-creds))
+      (endorsement-count (count-user-endorsements user))
+      (total-score (+ skill-points (* endorsement-count u10) (* (len user-badge-list) u25)))
+    )
+    (map-set user-skill-points user {
+      total-points: total-score,
+      credentials-count: (len user-creds),
+      endorsements-received: endorsement-count,
+      badges-count: (len user-badge-list),
+      last-updated: stacks-block-height
+    })
+    (update-leaderboard-position user total-score)
+    (ok total-score)
+  )
+)
+
+(define-private (calculate-skill-points (creds (list 100 uint)))
+  (fold + (map get-credential-points creds) u0)
+)
+
+(define-private (get-credential-points (cred-id uint))
+  (match (map-get? credentials cred-id)
+    cred (* (get difficulty-level cred) u10)
+    u0
+  )
+)
+
+(define-private (count-user-endorsements (user principal))
+  (let
+    ((user-creds (default-to (list) (map-get? user-credentials user))))
+    (fold + (map count-credential-endorsements user-creds) u0)
+  )
+)
+
+(define-private (count-credential-endorsements (cred-id uint))
+  (match (map-get? endorsement-stats cred-id)
+    stats (get total-endorsements stats)
+    u0
+  )
+)
+
+(define-private (update-leaderboard-position (user principal) (score uint))
+  (let
+    ((current-size (var-get leaderboard-size)))
+    (map-set global-leaderboard current-size {
+      user: user,
+      rank-score: score
+    })
+    (var-set leaderboard-size (+ current-size u1))
+  )
+)
+
+(define-read-only (get-user-ranking (user principal))
+  (map-get? user-skill-points user)
+)
+
+(define-read-only (get-leaderboard-entry (position uint))
+  (map-get? global-leaderboard position)
+)
+
+(define-read-only (get-leaderboard-size)
+  (var-get leaderboard-size)
+)
